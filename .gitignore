@@ -1,0 +1,6 @@
+node_modules/
+__pycache__/
+*.pyc
+毛泽东年谱.epub
+.venv/
+data/mao-chronology.jsonl

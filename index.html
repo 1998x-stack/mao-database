@@ -1,0 +1,294 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>毛泽东年谱 — 知识图谱</title>
+<link rel="stylesheet" href="base-dark.css">
+<style>
+:root {
+  --person:      #C41E3A; --persond: #8B1528;
+  --event:       #D4A017; --eventd: #8B6A0F;
+  --organization:#2E5090; --organizationd:#1C3360;
+  --location:    #2E8B57; --locationd:#1B5233;
+  --document:    #6B3FA0; --documentd:#422668;
+  --date:        #708090; --dated:    #4A5568;
+  --c1: var(--person); --c1d: var(--persond);
+  --c2: var(--event);  --c2d: var(--eventd);
+}
+* { margin:0; padding:0; box-sizing:border-box; }
+body { font-family: -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; overflow:hidden; height:100vh; background:#0d1114; }
+.page { display:flex; height:100vh; }
+.sidebar {
+  width:340px; min-width:280px; background:var(--bg2);
+  border-right:1px solid var(--border); display:flex; flex-direction:column;
+  padding:24px 20px; gap:20px; overflow-y:auto; z-index:10;
+}
+.sidebar h2 { font-size:18px; color:var(--text); display:flex; align-items:center; gap:8px; }
+.sidebar h2 .dot { width:8px; height:8px; border-radius:50%; background:var(--person); }
+.filter-group { display:flex; flex-direction:column; gap:6px; }
+.filter-group label { font-size:12px; color:var(--muted); text-transform:uppercase; letter-spacing:.5px; }
+.filter-row { display:flex; gap:8px; align-items:center; }
+.filter-row input[type=range] { flex:1; accent-color:var(--person); }
+.filter-row span { font-size:13px; color:var(--text); min-width:50px; text-align:right; font-variant-numeric:tabular-nums; }
+.legend { display:flex; flex-wrap:wrap; gap:6px; }
+.legend-item { display:flex; align-items:center; gap:5px; font-size:12px; color:var(--muted); }
+.legend-dot { width:10px; height:10px; border-radius:50%; }
+.stats { font-size:12px; color:var(--faint); border-top:1px solid var(--border); padding-top:12px; }
+.stats strong { color:var(--text); }
+#graph { flex:1; position:relative; cursor:grab; }
+#graph:active { cursor:grabbing; }
+#graph svg { width:100%; height:100%; }
+.node-label { font-size:11px; fill:var(--text); pointer-events:none; text-anchor:middle; dominant-baseline:central; }
+.edge-label { font-size:9px; fill:var(--faint); pointer-events:none; }
+.tooltip {
+  position:fixed; background:var(--bg3); border:1px solid var(--border);
+  padding:8px 12px; border-radius:6px; font-size:12px; color:var(--text);
+  pointer-events:none; z-index:100; max-width:240px; display:none;
+  box-shadow:0 4px 16px rgba(0,0,0,.4);
+}
+.tooltip .tt-name { font-weight:600; font-size:14px; margin-bottom:2px; }
+.tooltip .tt-type { color:var(--muted); font-size:11px; }
+.tooltip .tt-date { color:var(--faint); font-size:11px; margin-top:2px; }
+.loading { position:fixed; top:50%; left:50%; transform:translate(-50%,-50%); color:var(--muted); font-size:14px; }
+@media (max-width:768px) {
+  .page { flex-direction:column; }
+  .sidebar { width:100%; min-width:auto; max-height:40vh; flex-shrink:0; }
+}
+</style>
+</head>
+<body>
+<div class="page">
+  <div class="sidebar">
+    <h2><span class="dot"></span>毛泽东年谱知识图谱</h2>
+
+    <div class="filter-group">
+      <label>年份范围</label>
+      <div class="filter-row">
+        <span id="from-label">1893</span>
+        <input type="range" id="year-from" min="1893" max="1976" value="1893" step="1">
+      </div>
+      <div class="filter-row">
+        <span id="to-label">1976</span>
+        <input type="range" id="year-to" min="1893" max="1976" value="1976" step="1">
+      </div>
+    </div>
+
+    <div class="filter-group">
+      <label>实体类型</label>
+      <div class="legend" id="type-filters"></div>
+    </div>
+
+    <div class="filter-group">
+      <label>关系类型</label>
+      <div class="legend" id="edge-filters"></div>
+    </div>
+
+    <div class="stats" id="stats"></div>
+  </div>
+  <div id="graph"></div>
+</div>
+<div class="tooltip" id="tooltip"></div>
+<script src="https://d3js.org/d3.v7.min.js"></script>
+<script>
+let allNodes = [], allEdges = [];
+let filteredNodes = [], filteredEdges = [];
+let nodeMap = new Map();
+let simulation;
+let svg, g, zoom;
+
+const TYPE_COLORS = {
+  person:       '#C41E3A',
+  event:        '#D4A017',
+  organization:'#2E5090',
+  location:     '#2E8B57',
+  document:     '#6B3FA0',
+  date:         '#708090',
+};
+const TYPE_LABELS = {
+  person:'人物', event:'事件', organization:'组织', location:'地点', document:'文献', date:'时间'
+};
+
+const EDGE_LABELS = {
+  attended:'出席', presided:'主持', sent_to:'致电', wrote:'撰写',
+  met_with:'会见', discussed_with:'讨论', ordered:'指示', approved:'批准',
+  located_in:'位于', travels_to:'前往', mentioned_in:'提及'
+};
+
+function parseYear(dateStr) {
+  if (!dateStr) return null;
+  const m = dateStr.match(/(\d{4})/);
+  return m ? parseInt(m[1]) : null;
+}
+
+async function loadData() {
+  const [nResp, eResp] = await Promise.all([
+    fetch('data/graph/nodes.jsonl'),
+    fetch('data/graph/edges.jsonl')
+  ]);
+  const nText = await nResp.text();
+  const eText = await eResp.text();
+  allNodes = nText.trim().split('\n').filter(Boolean).map(JSON.parse);
+  allEdges = eText.trim().split('\n').filter(Boolean).map(JSON.parse);
+
+  allNodes.forEach(n => {
+    n._year = parseYear(n.date);
+    nodeMap.set(n.id, n);
+    const existing = allNodes.filter(x => x.id === n.id);
+    if (existing.length === 1) nodeMap.set(n.id, n);
+  });
+  allEdges.forEach(e => {
+    e._srcYear = nodeMap.get(e.source)?._year;
+    e._tgtYear = nodeMap.get(e.target)?._year;
+    e._year = e._srcYear || e._tgtYear;
+  });
+}
+
+function applyFilters() {
+  const fromY = parseInt(document.getElementById('year-from').value);
+  const toY = parseInt(document.getElementById('year-to').value);
+
+  const activeTypes = new Set();
+  document.querySelectorAll('#type-filters input:checked').forEach(cb => activeTypes.add(cb.value));
+  const activeEdges = new Set();
+  document.querySelectorAll('#edge-filters input:checked').forEach(cb => activeEdges.add(cb.value));
+
+  const yearNodes = allNodes.filter(n => {
+    if (n._year === null) return true;
+    return n._year >= fromY && n._year <= toY;
+  });
+  const typeNodes = activeTypes.size ? yearNodes.filter(n => activeTypes.has(n.type)) : yearNodes;
+  const nodeIds = new Set(typeNodes.map(n => n.id));
+
+  filteredEdges = allEdges.filter(e => {
+    if (!nodeIds.has(e.source) || !nodeIds.has(e.target)) return false;
+    if (activeEdges.size && !activeEdges.has(e.type)) return false;
+    return true;
+  });
+
+  const edgeNodeIds = new Set();
+  filteredEdges.forEach(e => { edgeNodeIds.add(e.source); edgeNodeIds.add(e.target); });
+  filteredNodes = typeNodes.filter(n => edgeNodeIds.has(n.id));
+  updateStats();
+  render();
+}
+
+function updateStats() {
+  document.getElementById('stats').innerHTML =
+    `节点 <strong>${filteredNodes.length}</strong> · ` +
+    `关系 <strong>${filteredEdges.length}</strong> · ` +
+    `全部节点 ${allNodes.length} · 全部关系 ${allEdges.length}`;
+}
+
+function render() {
+  const container = document.getElementById('graph');
+  container.innerHTML = '';
+  const W = container.clientWidth, H = container.clientHeight;
+  if (!W || !H) return;
+
+  svg = d3.select('#graph').append('svg').attr('viewBox', [0,0,W,H]);
+  g = svg.append('g');
+
+  zoom = d3.zoom().scaleExtent([0.15, 6]).on('zoom', e => g.attr('transform', e.transform));
+  svg.call(zoom);
+
+  const nodes = filteredNodes.map(n => ({ ...n }));
+  const edges = filteredEdges.map(e => ({ ...e }));
+
+  const link = g.append('g').selectAll('line')
+    .data(edges).join('line')
+    .attr('stroke', 'var(--border)').attr('stroke-width', d => d.type==='attended'?1.5:0.8)
+    .attr('stroke-opacity', 0.5);
+
+  const node = g.append('g').selectAll('circle')
+    .data(nodes).join('circle')
+    .attr('r', d => d.type==='person'?7:5)
+    .attr('fill', d => TYPE_COLORS[d.type]||'#888')
+    .attr('stroke', '#0d1114').attr('stroke-width', 2)
+    .style('cursor', 'pointer')
+    .on('mouseover', showTooltip).on('mouseout', hideTooltip)
+    .call(d3.drag().on('start', d => { if(!d3.event.active) simulation.alphaTarget(0.3).restart(); d.fx=d.x;d.fy=d.y; })
+      .on('drag', d => { d.fx=d3.event.x; d.fy=d3.event.y; })
+      .on('end', d => { if(!d3.event.active) simulation.alphaTarget(0); d.fx=null;d.fy=null; }));
+
+  const label = g.append('g').selectAll('text')
+    .data(nodes.filter(n => n.type==='person'||n.type==='organization')).join('text')
+    .attr('class','node-label').text(d => d.name.length>6?d.name.slice(0,6)+'…':d.name)
+    .attr('dy', d => d.type==='person'?14:12);
+
+  simulation = d3.forceSimulation(nodes)
+    .force('link', d3.forceLink(edges).id(d => d.id).distance(60))
+    .force('charge', d3.forceManyBody().strength(-120))
+    .force('center', d3.forceCenter(W/2, H/2))
+    .force('collision', d3.forceCollide(15))
+    .on('tick', () => {
+      link.attr('x1',d=>d.source.x).attr('y1',d=>d.source.y)
+          .attr('x2',d=>d.target.x).attr('y2',d=>d.target.y);
+      node.attr('cx',d=>d.x).attr('cy',d=>d.y);
+      label.attr('x',d=>d.x).attr('y',d=>d.y);
+    });
+}
+
+function showTooltip(d) {
+  const tt = document.getElementById('tooltip');
+  tt.style.display = 'block';
+  tt.innerHTML = `<div class="tt-name">${d.name}</div>
+    <div class="tt-type">${TYPE_LABELS[d.type]||d.type}</div>
+    ${d.date?`<div class="tt-date">${d.date}</div>`:''}`;
+  document.addEventListener('mousemove', moveTooltip);
+}
+function hideTooltip() {
+  document.getElementById('tooltip').style.display = 'none';
+  document.removeEventListener('mousemove', moveTooltip);
+}
+function moveTooltip(e) {
+  const tt = document.getElementById('tooltip');
+  tt.style.left = (e.clientX+14)+'px';
+  tt.style.top = (e.clientY-10)+'px';
+}
+
+function buildTypeFilters() {
+  const types = [...new Set(allNodes.map(n=>n.type))].filter(Boolean);
+  const container = document.getElementById('type-filters');
+  types.forEach(t => {
+    const label = document.createElement('label');
+    label.className = 'legend-item';
+    label.innerHTML = `<input type="checkbox" value="${t}" checked>
+      <span class="legend-dot" style="background:${TYPE_COLORS[t]||'#888'}"></span>${TYPE_LABELS[t]||t}`;
+    label.querySelector('input').addEventListener('change', applyFilters);
+    container.appendChild(label);
+  });
+}
+function buildEdgeFilters() {
+  const types = [...new Set(allEdges.map(e=>e.type))].filter(Boolean);
+  const container = document.getElementById('edge-filters');
+  types.forEach(t => {
+    const label = document.createElement('label');
+    label.className = 'legend-item';
+    label.innerHTML = `<input type="checkbox" value="${t}" checked>${EDGE_LABELS[t]||t}`;
+    label.querySelector('input').addEventListener('change', applyFilters);
+    container.appendChild(label);
+  });
+}
+
+async function init() {
+  await loadData();
+  buildTypeFilters();
+  buildEdgeFilters();
+
+  document.getElementById('year-from').addEventListener('input', () => {
+    document.getElementById('from-label').textContent = document.getElementById('year-from').value;
+    applyFilters();
+  });
+  document.getElementById('year-to').addEventListener('input', () => {
+    document.getElementById('to-label').textContent = document.getElementById('year-to').value;
+    applyFilters();
+  });
+
+  applyFilters();
+  window.addEventListener('resize', render);
+}
+init();
+</script>
+</body>
+</html>
