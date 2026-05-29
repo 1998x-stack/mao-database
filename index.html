@@ -39,8 +39,8 @@ body { font-family: -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; over
 #graph { flex:1; position:relative; cursor:grab; }
 #graph:active { cursor:grabbing; }
 #graph svg { width:100%; height:100%; }
-.node-label { font-size:11px; fill:var(--text); pointer-events:none; text-anchor:middle; dominant-baseline:central; }
-.edge-label { font-size:9px; fill:var(--faint); pointer-events:none; }
+.node-label { font-size:11px; fill:#e0e0e0; pointer-events:none; text-anchor:middle; dominant-baseline:central; }
+.edge-label { font-size:9px; fill:#666; pointer-events:none; }
 .tooltip {
   position:fixed; background:var(--bg3); border:1px solid var(--border);
   padding:8px 12px; border-radius:6px; font-size:12px; color:var(--text);
@@ -197,8 +197,8 @@ function render() {
 
   const link = g.append('g').selectAll('line')
     .data(edges).join('line')
-    .attr('stroke', 'var(--border)').attr('stroke-width', d => d.type==='attended'?1.5:0.8)
-    .attr('stroke-opacity', 0.5);
+    .attr('stroke', '#4a5568').attr('stroke-width', d => d.type==='attended'?2:1.2)
+    .attr('stroke-opacity', 0.6);
 
   const node = g.append('g').selectAll('circle')
     .data(nodes).join('circle')
@@ -207,14 +207,15 @@ function render() {
     .attr('stroke', '#0d1114').attr('stroke-width', 2)
     .style('cursor', 'pointer')
     .on('mouseover', showTooltip).on('mouseout', hideTooltip)
-    .call(d3.drag().on('start', d => { if(!d3.event.active) simulation.alphaTarget(0.3).restart(); d.fx=d.x;d.fy=d.y; })
-      .on('drag', d => { d.fx=d3.event.x; d.fy=d3.event.y; })
-      .on('end', d => { if(!d3.event.active) simulation.alphaTarget(0); d.fx=null;d.fy=null; }));
+    .call(d3.drag().on('start', (event,d) => { if(!event.active) simulation.alphaTarget(0.3).restart(); d.fx=d.x;d.fy=d.y; })
+      .on('drag', (event,d) => { d.fx=event.x; d.fy=event.y; })
+      .on('end', (event,d) => { if(!event.active) simulation.alphaTarget(0); d.fx=null;d.fy=null; }));
 
   const label = g.append('g').selectAll('text')
     .data(nodes.filter(n => n.type==='person'||n.type==='organization')).join('text')
     .attr('class','node-label').text(d => d.name.length>6?d.name.slice(0,6)+'…':d.name)
-    .attr('dy', d => d.type==='person'?14:12);
+    .attr('dy', d => d.type==='person'?14:12)
+    .style('fill', '#e0e0e0');
 
   simulation = d3.forceSimulation(nodes)
     .force('link', d3.forceLink(edges).id(d => d.id).distance(60))
