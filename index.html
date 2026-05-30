@@ -80,6 +80,14 @@ body { font-family: -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; over
     </div>
 
     <div class="filter-group">
+      <label>最小连接数</label>
+      <div class="filter-row">
+        <input type="range" id="min-degree" min="0" max="50" value="1" step="1">
+        <span id="min-degree-label">1</span>
+      </div>
+    </div>
+
+    <div class="filter-group">
       <label>关系类型</label>
       <div class="legend" id="edge-filters"></div>
     </div>
@@ -123,8 +131,8 @@ function parseYear(dateStr) {
 
 async function loadData() {
   const [nResp, eResp] = await Promise.all([
-    fetch('data/graph/nodes.jsonl'),
-    fetch('data/graph/edges.jsonl')
+    fetch('data/cleaned_graph/nodes.jsonl'),
+    fetch('data/cleaned_graph/edges.jsonl')
   ]);
   const nText = await nResp.text();
   const eText = await eResp.text();
@@ -197,12 +205,14 @@ function render() {
 
   const link = g.append('g').selectAll('line')
     .data(edges).join('line')
-    .attr('stroke', '#4a5568').attr('stroke-width', d => d.type==='attended'?2:1.2)
-    .attr('stroke-opacity', 0.6);
+    .attr('stroke', '#4a5568')
+    .attr('stroke-width', d => Math.max(0.5, Math.min(6, (d.weight||1)*1.2)))
+    .attr('stroke-opacity', d => 0.25 + Math.min(0.5, (d.weight||1)*0.15));
 
+  const maxDeg = Math.max(1, ...nodes.map(n => n.degree||0));
   const node = g.append('g').selectAll('circle')
     .data(nodes).join('circle')
-    .attr('r', d => d.type==='person'?7:5)
+    .attr('r', d => 3 + Math.sqrt((d.degree||0)/Math.max(1,maxDeg)) * 15)
     .attr('fill', d => TYPE_COLORS[d.type]||'#888')
     .attr('stroke', '#0d1114').attr('stroke-width', 2)
     .style('cursor', 'pointer')
@@ -233,9 +243,13 @@ function render() {
 function showTooltip(d) {
   const tt = document.getElementById('tooltip');
   tt.style.display = 'block';
+  const aliases = d.aliases && d.aliases.length ? `<div class="tt-aliases">别称: ${d.aliases.join(', ')}</div>` : '';
+  const degree = d.degree !== undefined ? `<div class="tt-degree">连接数: ${d.degree}</div>` : '';
   tt.innerHTML = `<div class="tt-name">${d.name}</div>
     <div class="tt-type">${TYPE_LABELS[d.type]||d.type}</div>
-    ${d.date?`<div class="tt-date">${d.date}</div>`:''}`;
+    ${degree}
+    ${d.date?`<div class="tt-date">${d.date}</div>`:''}
+    ${aliases}`;
   document.addEventListener('mousemove', moveTooltip);
 }
 function hideTooltip() {
