@@ -18,9 +18,9 @@ body { font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; overf
 .sidebar h2 .dot { width:8px; height:8px; border-radius:50%; background:var(--person); }
 .filter-group { display:flex; flex-direction:column; gap:4px; }
 .filter-group label { font-size:10px; color:#777; text-transform:uppercase; letter-spacing:.5px; }
-.filter-row { display:flex; gap:8px; align-items:center; }
-.filter-row input[type=range] { flex:1; accent-color:var(--person); }
-.filter-row span { font-size:12px; color:#ccc; min-width:44px; text-align:right; }
+.select-row { display:flex; gap:6px; align-items:center; }
+.select-row select { background:#1c1f26; color:#ccc; border:1px solid #333; border-radius:4px; padding:4px 8px; font-size:12px; outline:none; }
+.select-row span { font-size:11px; color:#666; }
 .legend { display:flex; flex-wrap:wrap; gap:4px; }
 .legend-item { display:flex; align-items:center; gap:4px; font-size:11px; color:#888; }
 .legend-dot { width:8px; height:8px; border-radius:50%; }
@@ -46,9 +46,18 @@ body { font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; overf
 <div class="sidebar">
   <h2><span class="dot"></span>毛泽东年谱知识图谱</h2>
   <div class="filter-group">
-    <label>年份范围</label>
-    <div class="filter-row"><span id="fl">1893</span><input type="range" id="yf" min="1893" max="1976" value="1893"></div>
-    <div class="filter-row"><span id="tl">1976</span><input type="range" id="yt" min="1893" max="1976" value="1976"></div>
+    <label>选择年份</label>
+    <div class="select-row">
+      <select id="ys"><option value="all">全部年份</option></select>
+    </div>
+  </div>
+  <div class="filter-group">
+    <label>月份范围（同一年内）</label>
+    <div class="select-row">
+      <select id="mf"><option value="0">1月</option></select>
+      <span>—</span>
+      <select id="mt"><option value="13">12月</option></select>
+    </div>
   </div>
   <div class="filter-group">
     <label>实体类型</label>
@@ -71,7 +80,7 @@ const TL={person:'人物',event:'事件',organization:'组织',location:'地点'
 const EL={attended:'出席',presided:'主持',sent_to:'致电',wrote:'撰写',met_with:'会见',discussed_with:'讨论',ordered:'指示',approved:'批准',located_in:'位于',travels_to:'前往',mentioned_in:'提及',part_of:'隶属',member_of:'成员'};
 
 let AN=[],AE=[],FN=[],FE=[];
-let svg,g,zoom,filterTimer;
+let svg,g,zoom,simulation;
 
 async function load(){
   const[nr,er]=await Promise.all([fetch('data/cleaned_graph/nodes.jsonl'),fetch('data/cleaned_graph/edges.jsonl')]);
@@ -80,15 +89,42 @@ async function load(){
   AN.length=0; AE.length=0;
   for(let i=0;i<nLines.length;i++){if(nLines[i])AN.push(JSON.parse(nLines[i]));}
   for(let i=0;i<eLines.length;i++){if(eLines[i])AE.push(JSON.parse(eLines[i]));}
-  AN.forEach(n=>{n._y=n.year||parseInt((n.date||'').match(/(\d{4})/)?.[1])||0;});
-  buildFilters(); applyFilters();
+  AN.forEach(n=>{
+    n._y=n.year||parseInt((n.date||'').match(/(\d{4})/)?.[1])||0;
+    n._m=n.month||parseInt((n.date||'').match(/(\d{1,2})月/)?.[1])||0;
+  });
+  buildYearSelect(); buildFilters(); applyFilters();
+}
+
+function buildYearSelect(){
+  const years=[...new Set(AN.map(n=>n._y))].filter(Boolean).sort((a,b)=>a-b);
+  const s=document.getElementById('ys');
+  s.innerHTML='<option value="all">全部年份</option>';
+  years.forEach(y=>{const o=document.createElement('option');o.value=y;o.textContent=y+'年';s.appendChild(o);});
+  document.getElementById('ys').addEventListener('change',applyFilters);
+  for(let i=1;i<=12;i++){document.getElementById('mf').innerHTML+=`<option value="${i}">${i}月</option>`;}
+  for(let i=1;i<=12;i++){document.getElementById('mt').innerHTML+=`<option value="${i}">${i}月</option>`;}
+  document.getElementById('mt').value='12';
+  document.getElementById('mf').addEventListener('change',applyFilters);
+  document.getElementById('mt').addEventListener('change',applyFilters);
 }
 
 function applyFilters(){
-  const fy=+yf.value,ty=+yt.value;
+  const sy=document.getElementById('ys').value;
+  const fm=+document.getElementById('mf').value;
+  const tm=+document.getElementById('mt').value;
   const at=new Set([...tf.querySelectorAll('input:checked')].map(c=>c.value));
   const ae=new Set([...ef.querySelectorAll('input:checked')].map(c=>c.value));
-  const yn=AN.filter(n=>!n._y||(n._y>=fy&&n._y<=ty));
+
+  let yn=AN;
+  if(sy!=='all'){
+    const y=+sy;
+    if(fm<=tm){
+      yn=AN.filter(n=>n._y===y&&n._m>=fm&&n._m<=tm);
+    }else{
+      yn=AN.filter(n=>n._y===y);
+    }
+  }
   const tn=at.size?yn.filter(n=>at.has(n.type)):yn;
   const nids=new Set(tn.map(n=>n.id));
   FE=AE.filter(e=>nids.has(e.source)&&nids.has(e.target)&&(!ae.size||ae.has(e.type)));
@@ -99,55 +135,65 @@ function applyFilters(){
 }
 
 function render(){
-  const c=document.getElementById('graph');
-  c.innerHTML='';
+  const c=document.getElementById('graph'); c.innerHTML='';
   const W=c.clientWidth,H=c.clientHeight;
   if(!W||!H)return;
 
   svg=d3.select('#graph').append('svg').attr('viewBox',[0,0,W,H]);
   g=svg.append('g');
-
   zoom=d3.zoom().scaleExtent([0.08,8]).on('zoom',e=>g.attr('transform',e.transform));
   svg.call(zoom);
   svg.call(zoom.transform,d3.zoomIdentity.translate(W/2,H/2).scale(0.5));
 
-  const nmap=new Map(); FN.forEach(n=>nmap.set(n.id,n));
-  const maxDeg=Math.max(1,...FN.map(n=>n.degree||0));
+  const nodes=FN.map(n=>({id:n.id,...n}));
+  const edges=FE.map(e=>({...e}));
+  const nmap=new Map(); nodes.forEach(n=>nmap.set(n.id,n));
+  edges.forEach(e=>{e.source=nmap.get(e.source)||e.source;e.target=nmap.get(e.target)||e.target;});
 
-  g.append('g').selectAll('line').data(FE).join('line')
-    .attr('x1',d=>{const s=nmap.get(d.source);return s?.x||0;})
-    .attr('y1',d=>{const s=nmap.get(d.source);return s?.y||0;})
-    .attr('x2',d=>{const t=nmap.get(d.target);return t?.x||0;})
-    .attr('y2',d=>{const t=nmap.get(d.target);return t?.y||0;})
+  const maxDeg=Math.max(1,...nodes.map(n=>n.degree||0));
+
+  const link=g.append('g').selectAll('line').data(edges).join('line')
     .attr('stroke','#4a5568')
     .attr('stroke-width',d=>Math.max(0.3,Math.min(4,(d.weight||1)*0.8)))
     .attr('stroke-opacity',0.35);
 
-  g.append('g').selectAll('circle').data(FN).join('circle')
-    .attr('cx',d=>d.x||0).attr('cy',d=>d.y||0)
+  const node=g.append('g').selectAll('circle').data(nodes).join('circle')
     .attr('r',d=>2+Math.sqrt((d.degree||0)/maxDeg)*12)
     .attr('fill',d=>TC[d.type]||'#888')
     .attr('stroke','#0d1114').attr('stroke-width',1.5)
     .style('cursor','pointer')
-    .on('mouseover',showTT).on('mouseout',hideTT);
+    .on('mouseover',showTT).on('mouseout',hideTT)
+    .call(d3.drag().on('start',dragStart).on('drag',dragged).on('end',dragEnd));
 
-  g.append('g').selectAll('text').data(FN.filter(n=>n.type==='person'||n.type==='organization')).join('text')
-    .attr('x',d=>d.x||0).attr('y',d=>d.y||0)
-    .attr('dy',d=>16+Math.sqrt((d.degree||0)/maxDeg)*12)
-    .attr('text-anchor','middle')
-    .attr('fill','#ccc').attr('font-size','10px')
+  const label=g.append('g').selectAll('text').data(nodes.filter(n=>n.type==='person'||n.type==='organization')).join('text')
+    .attr('text-anchor','middle').attr('fill','#ccc').attr('font-size','10px')
     .text(d=>d.name.length>6?d.name.slice(0,6)+'…':d.name);
+
+  simulation=d3.forceSimulation(nodes)
+    .force('link',d3.forceLink(edges).id(d=>d.id).distance(50))
+    .force('charge',d3.forceManyBody().strength(-80))
+    .force('center',d3.forceCenter(0,0))
+    .force('collision',d3.forceCollide(d=>2+Math.sqrt((d.degree||0)/maxDeg)*12+2))
+    .alphaDecay(0.02)
+    .on('tick',()=>{
+      link.attr('x1',d=>d.source.x).attr('y1',d=>d.source.y).attr('x2',d=>d.target.x).attr('y2',d=>d.target.y);
+      node.attr('cx',d=>d.x).attr('cy',d=>d.y);
+      label.attr('x',d=>d.x).attr('y',d=>d.y+16+Math.sqrt((d.degree||0)/maxDeg)*12);
+    });
+
+  if(simulation){simulation.alpha(1).restart();}
 }
 
+function dragStart(event,d){if(!event.active)simulation.alphaTarget(0.3).restart();d.fx=d.x;d.fy=d.y;}
+function dragged(event,d){d.fx=event.x;d.fy=event.y;}
+function dragEnd(event,d){if(!event.active)simulation.alphaTarget(0);d.fx=null;d.fy=null;}
+
 function showTT(_,d){
-  const tt=document.getElementById('tt');
-  tt.style.display='block';
+  const tt=document.getElementById('tt');tt.style.display='block';
   const al=d.aliases?.length?`<div class="tt-meta">别称: ${d.aliases.join(', ')}</div>`:'';
   tt.innerHTML=`<div class="tt-name">${d.name}</div><div class="tt-type">${TL[d.type]||d.type}</div><div class="tt-meta">连接: ${d.degree||0}${d.date?' · '+d.date:''}</div>${al}`;
 }
 function hideTT(){document.getElementById('tt').style.display='none';}
-
-function scheduleFilter(){clearTimeout(filterTimer);filterTimer=setTimeout(applyFilters,100);}
 
 function buildFilters(){
   document.addEventListener('mousemove',e=>{const tt=document.getElementById('tt');if(tt.style.display==='block'){tt.style.left=(e.clientX+14)+'px';tt.style.top=(e.clientY-10)+'px';}});
@@ -163,8 +209,6 @@ function buildFilters(){
     l.innerHTML=`<input type="checkbox" value="${t}" checked>${EL[t]||t}`;
     l.querySelector('input').addEventListener('change',applyFilters);ec.appendChild(l);
   });
-  yf.addEventListener('input',()=>{fl.textContent=yf.value;scheduleFilter();});
-  yt.addEventListener('input',()=>{tl.textContent=yt.value;scheduleFilter();});
 }
 
 window.addEventListener('resize',render);
