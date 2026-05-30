@@ -19532,3 +19532,8 @@
 {"id": "event-总路线", "type": "event", "name": "总路线", "date": "1959年2月2日"}
 {"id": "person-哈尔塞亲王", "type": "person", "name": "哈尔塞亲王", "aliases": ["阿曼副教长哈尔塞亲王"], "date": "1959年2月8日"}
 {"id": "event-会见阿曼副教长哈尔塞亲王", "type": "event", "name": "会见阿曼副教长哈尔塞亲王", "date": "1959年2月8日"}
+{"id": "event-会见胡志明黄文欢", "type": "event", "name": "会见胡志明、黄文欢", "date": "1959年2月10日"}
+{"id": "event-会见印度共产党中央总书记高士", "type": "event", "name": "会见印度共产党中央总书记高士", "date": "1959-02-12"}
+{"id": "organization-中国驻英国代办处", "type": "organization", "name": "中国驻英国代办处", "date": "1959年2月12日"}
+{"id": "document-中国驻英国代办处关于一九五八年英国同美法西德等国矛盾发展的初步总结", "type": "document", "name": "中国驻英国代办处关于一九五八年英国同美、法、西德等国矛盾发展的初步总结", "aliases": ["报告"], "date": "1959年2月12日"}
+{"id": "location-西德", "type": "location", "name": "西德", "date": "1959年2月12日"}
