@@ -4,7 +4,8 @@
 import json
 import os
 import re
-from collections import defaultdict, Counter
+import math
+from collections import defaultdict, Counter, deque
 from typing import List, Dict, Tuple
 
 
@@ -187,6 +188,8 @@ def clean_graph(raw_nodes: str, raw_edges: str, out_nodes: str, out_edges: str):
     if hierarchy_added:
         print(f"  Added {hierarchy_added} org hierarchy edges")
 
+    _compute_layout(canonical_nodes, cleaned_edges)
+
     save_jsonl(out_nodes, cleaned_nodes)
     save_jsonl(out_edges, cleaned_edges)
 
@@ -200,6 +203,56 @@ def clean_graph(raw_nodes: str, raw_edges: str, out_nodes: str, out_edges: str):
     print(f"\nTop nodes:")
     for n in top:
         print(f"  [{n['type']:15s}] degree={n['degree']:4d}  {n['name']}")
+
+
+import math
+from collections import deque
+
+
+def _compute_layout(nodes_by_id: Dict[str, dict], edges: List[dict]):
+    print("  Computing radial layout...")
+
+    adj = defaultdict(set)
+    for e in edges:
+        adj[e['source']].add(e['target'])
+        adj[e['target']].add(e['source'])
+
+    center = node_key("毛泽东", "person")
+    if center not in nodes_by_id:
+        center = next(iter(nodes_by_id))
+
+    layers = defaultdict(list)
+    visited = set()
+    q = deque([(center, 0)])
+    while q:
+        nid, dist = q.popleft()
+        if nid in visited:
+            continue
+        visited.add(nid)
+        layers[dist].append(nid)
+        for neighbor in adj.get(nid, set()):
+            if neighbor not in visited:
+                q.append((neighbor, dist + 1))
+
+    max_dist = max(layers.keys()) if layers else 1
+    phi = (1 + math.sqrt(5)) / 2
+
+    for dist, layer_nodes in sorted(layers.items()):
+        radius = 10 + dist * 80
+        n = len(layer_nodes)
+        for i, nid in enumerate(layer_nodes):
+            angle = 2 * math.pi * ((i * phi) % 1.0)
+            nodes_by_id[nid]['x'] = round(radius * math.cos(angle), 1)
+            nodes_by_id[nid]['y'] = round(radius * math.sin(angle), 1)
+
+    isolated = [nid for nid in nodes_by_id if nid not in visited]
+    cols = int(math.sqrt(len(isolated))) + 1
+    for i, nid in enumerate(isolated):
+        row, col = divmod(i, cols)
+        nodes_by_id[nid]['x'] = round(600 + col * 40, 1)
+        nodes_by_id[nid]['y'] = round(-400 + row * 40, 1)
+
+    print(f"  Layout: {len(visited)} connected nodes in {max_dist+1} rings, {len(isolated)} isolated on grid")
 
 
 if __name__ == "__main__":
