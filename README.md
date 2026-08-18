@@ -2,6 +2,8 @@
 
 # 毛泽东年谱数据库
 
+> **English TL;DR:** A structured time-series database & knowledge graph of the Mao Zedong chronology — organized, queried, and enriched with DeepSeek AI, leading to an interactive visualization / GitHub Pages dashboard.
+
 **Mao Zedong Chronology — Structured Time-Series Database & Knowledge Graph**
 
 [![GitHub Pages](https://img.shields.io/badge/demo-visualization-C41E3A?logo=github)](https://1998x-stack.github.io/mao-database/)
