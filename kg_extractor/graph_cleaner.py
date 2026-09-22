@@ -1,262 +1,120 @@
-#!/usr/bin/env python3
-"""Graph cleaning: fix typos, merge cross-type duplicates, normalize dates, consolidate edge types."""
-
+"""Normalize knowledge graph without changing relation semantics or inventing links."""
 import json
 import os
 import re
-import math
-from collections import defaultdict, Counter, deque
-from typing import List, Dict, Tuple
+import tempfile
+from collections import Counter
+from pathlib import Path
+
+ALIASES = {"meet_with": "met_with", "meets": "met_with", "met": "met_with"}
+INVERSE = {"written_by": "wrote"}
+ISO = re.compile(r"^(\d{4})-(\d{1,2})(?:-(\d{1,2}))?(?:$|T)")
+CHINESE = re.compile(r"(\d{4})年(?:(\d{1,2})月)?(?:(\d{1,2})日)?")
 
 
-def load_jsonl(path: str) -> List[dict]:
-    if not os.path.exists(path):
-        return []
-    with open(path) as f:
-        return [json.loads(line) for line in f if line.strip()]
-
-
-def save_jsonl(path: str, items: List[dict]):
-    os.makedirs(os.path.dirname(path), exist_ok=True)
-    with open(path, "w") as f:
-        for item in items:
-            f.write(json.dumps(item, ensure_ascii=False) + "\n")
-
-
-def node_key(name: str, etype: str) -> str:
-    return f"{etype}:{name.strip()}"
-
-
-def parse_date(d: str) -> Tuple[int, int, int]:
-    if not d:
+def parse_date(value):
+    if not isinstance(value, str):
         return (0, 0, 0)
-    m = re.search(r'(\d{4})', d)
-    year = int(m.group(1)) if m else 0
-    m = re.search(r'(\d{1,2})月', d)
-    month = int(m.group(1)) if m else 0
-    m = re.search(r'(\d{1,2})日', d)
-    day = int(m.group(1)) if m else 0
-    return (year, month, day)
+    match = ISO.match(value.strip()) or CHINESE.search(value)
+    if not match:
+        return (0, 0, 0)
+    year, month, day = (int(p) if p else 0 for p in match.groups())
+    return (year, month, day) if month <= 12 and day <= 31 else (0, 0, 0)
 
 
-EDGE_CANONICAL = {
-    'meet_with': 'met_with',
-    'meets': 'met_with',
-    'met': 'met_with',
-    'discussed': 'discussed_with',
-    'organised': 'organized',
-    'organized_by': 'organized',
-    'dated': 'has_date',
-    'dated_on': 'has_date',
-    'date': 'has_date',
-    'date_of': 'has_date',
-    'in_date': 'has_date',
-    'occurred_on': 'has_date',
-    'part_of': 'member_of',
-    'belongs_to': 'member_of',
-    'affiliated_with': 'member_of',
-    'written_by': 'wrote',
-    'delivered_speech': 'wrote',
-    'travels_from': 'travels_to',
-    'commanded_by': 'ordered',
-    'initiated': 'presided',
-    'formed': 'presided',
-    'read': 'wrote',
-    'about': 'mentioned_in',
-    'performed': 'attended',
-    'involved_in': 'attended',
-    'held_on': 'located_in',
-    'works_at': 'located_in',
-}
-TYPE_FIX = {'organisation': 'organization'}
+def _evidence(value):
+    if isinstance(value, str):
+        return [value] if value else []
+    if isinstance(value, list):
+        return [part for part in value if isinstance(part, str) and part]
+    return []
 
 
-def clean_graph(raw_nodes: str, raw_edges: str, out_nodes: str, out_edges: str):
-    print("Cleaning graph...")
-    nodes = load_jsonl(raw_nodes)
-    edges = load_jsonl(raw_edges)
-    print(f"  Raw: {len(nodes)} nodes, {len(edges)} edges")
-
-    # Step 1: Fix type typos
-    typo_fixed = 0
-    for n in nodes:
-        if n['type'] in TYPE_FIX:
-            n['type'] = TYPE_FIX[n['type']]
-            typo_fixed += 1
-    if typo_fixed:
-        print(f"  Fixed {typo_fixed} type typos (organisation→organization)")
-
-    # Step 2: Merge same-name/different-type duplicates
-    merged = defaultdict(list)
-    for n in nodes:
-        merged[n['name']].append(n)
-
-    multi_type = {k: v for k, v in merged.items() if len(v) > 1}
-    print(f"  Cross-type duplicates: {len(multi_type)} names")
-
-    canonical_nodes: Dict[str, dict] = {}
-    id_remap: Dict[str, str] = {}
-
-    for name, group in merged.items():
-        if len(group) == 1:
-            n = group[0]
-            canonical_id = node_key(n['name'], n['type'])
-            canonical_nodes[canonical_id] = dict(n)
-            canonical_nodes[canonical_id]['id'] = canonical_id
-            id_remap[n['id']] = canonical_id
+def normalize_graph(nodes, edges):
+    """Keep differently typed names separate; retain every distinct evidence text."""
+    normalized = {}
+    remap = {}
+    for node in nodes:
+        name, kind, old_id = node.get("name"), node.get("type"), node.get("id")
+        if not all(isinstance(x, str) and x.strip() for x in (name, kind, old_id)):
+            raise ValueError(f"Invalid node: {node!r}")
+        kind = {"organisation": "organization"}.get(kind, kind)
+        key = f"{kind}:{name.strip()}"
+        if old_id in remap and remap[old_id] != key:
+            raise ValueError(f"Conflicting node ID: {old_id}")
+        remap[old_id] = key
+        if key not in normalized:
+            normalized[key] = dict(node, id=key, name=name.strip(), type=kind)
         else:
-            types = sorted(set(n['type'] for n in group))
-            primary_type = types[0]
-            n0 = group[0]
-            new_id = node_key(n0['name'], primary_type)
-            canonical_nodes[new_id] = {
-                'id': new_id,
-                'type': primary_type,
-                'name': n0['name'],
-                'aliases': sorted(set(a for n in group for a in n.get('aliases', []))),
-                'date': min((n.get('date', '') for n in group if n.get('date')), default=n0.get('date', '')),
-            }
-            for n in group:
-                id_remap[n['id']] = new_id
-
-    print(f"  Nodes after cross-type merge: {len(canonical_nodes)}")
-
-    # Step 3: Normalize date fields
-    for n in canonical_nodes.values():
-        d = n.get('date', '')
-        if d:
-            y, m, day = parse_date(d)
-            n['year'] = y if y else None
-            n['month'] = m if m else None
-            n['day'] = day if day else None
-
-    # Step 4: Remap & consolidate edges
-    for e in edges:
-        e['source'] = id_remap.get(e['source'], e['source'])
-        e['target'] = id_remap.get(e['target'], e['target'])
-        if e['type'] in EDGE_CANONICAL:
-            e['type'] = EDGE_CANONICAL[e['type']]
-
-    node_ids = set(canonical_nodes.keys())
-    edge_groups: Dict[Tuple, List[dict]] = defaultdict(list)
-    dropped = 0
-    for e in edges:
-        if e['source'] not in node_ids or e['target'] not in node_ids:
-            dropped += 1
-            continue
-        edge_groups[(e['source'], e['target'], e['type'])].append(e)
-
+            previous = normalized[key]
+            previous["aliases"] = list(dict.fromkeys(
+                (previous.get("aliases") or []) + (node.get("aliases") or [])))
+    grouped = {}
+    for edge in edges:
+        src, dst = remap.get(edge.get("source")), remap.get(edge.get("target"))
+        kind = edge.get("type")
+        if src is None or dst is None:
+            raise ValueError(f"Dangling edge: {edge!r}")
+        if not isinstance(kind, str) or not kind.strip():
+            raise ValueError(f"Invalid edge type: {edge!r}")
+        if kind in INVERSE:
+            src, dst, kind = dst, src, INVERSE[kind]
+        else:
+            kind = ALIASES.get(kind, kind)
+        key = (src, dst, kind)
+        if key not in grouped:
+            grouped[key] = dict(edge, source=src, target=dst, type=kind,
+                                weight=0, evidence=[])
+        result = grouped[key]
+        result["weight"] += max(1, int(edge.get("weight") or 1))
+        result["evidence"].extend(_evidence(edge.get("evidence")))
     cleaned_edges = []
-    for (src, tgt, etype), group in edge_groups.items():
-        evidence = [e['evidence'] for e in group if e.get('evidence')]
-        cleaned_edges.append({
-            'source': src, 'target': tgt, 'type': etype,
-            'evidence': evidence[0] if len(evidence) == 1 else evidence,
-            'weight': len(group),
-        })
-
-    print(f"  Edges: {len(edges)} → {len(cleaned_edges)} (dropped {dropped} dangling)")
-
-    # Step 5: Add node metrics
+    for key in sorted(grouped):
+        result = grouped[key]
+        evidence = list(dict.fromkeys(result["evidence"]))
+        result["evidence"] = evidence[0] if len(evidence) == 1 else evidence
+        cleaned_edges.append(result)
     degree = Counter()
-    for e in cleaned_edges:
-        degree[e['source']] += 1
-        degree[e['target']] += 1
-    for n in canonical_nodes.values():
-        n['degree'] = degree.get(n['id'], 0)
-
-    cleaned_nodes = sorted(canonical_nodes.values(), key=lambda n: (-n['degree'], n['type'], n['name']))
-
-    # Step 6: Add org hierarchy edges
-    org_parents = [
-        ("中共中央政治局", "中共中央"),
-        ("中共中央书记处", "中共中央"),
-        ("中共中央军委", "中共中央"),
-        ("中央文革小组", "中共中央"),
-    ]
-    hierarchy_added = 0
-    for child_name, parent_name in org_parents:
-        cid = node_key(child_name, "organization")
-        pid = node_key(parent_name, "organization")
-        if cid in canonical_nodes and pid in canonical_nodes:
-            if not any(e['source'] == cid and e['target'] == pid for e in cleaned_edges):
-                cleaned_edges.append({
-                    'source': cid, 'target': pid, 'type': 'part_of',
-                    'evidence': '组织层级', 'weight': 1,
-                })
-                hierarchy_added += 1
-    if hierarchy_added:
-        print(f"  Added {hierarchy_added} org hierarchy edges")
-
-    _compute_layout(canonical_nodes, cleaned_edges)
-
-    save_jsonl(out_nodes, cleaned_nodes)
-    save_jsonl(out_edges, cleaned_edges)
-
-    tc = Counter(n['type'] for n in cleaned_nodes)
-    ec = Counter(e['type'] for e in cleaned_edges)
-    print(f"\nCleaned: {len(cleaned_nodes)} nodes, {len(cleaned_edges)} edges")
-    print(f"  Node types: {dict(tc)}")
-    print(f"  Edge types: {dict(ec)}")
-
-    top = sorted(cleaned_nodes, key=lambda n: n['degree'], reverse=True)[:10]
-    print(f"\nTop nodes:")
-    for n in top:
-        print(f"  [{n['type']:15s}] degree={n['degree']:4d}  {n['name']}")
+    for edge in cleaned_edges:
+        degree[edge["source"]] += 1
+        degree[edge["target"]] += 1
+    for node in normalized.values():
+        node["degree"] = degree[node["id"]]
+        year, month, day = parse_date(node.get("date"))
+        node.update(year=year or None, month=month or None, day=day or None)
+    return sorted(normalized.values(),
+                  key=lambda node: (-node["degree"], node["type"], node["name"])), cleaned_edges
 
 
-import math
-from collections import deque
+def _load(path):
+    with open(path, encoding="utf-8") as stream:
+        return [json.loads(line) for line in stream if line.strip()]
 
 
-def _compute_layout(nodes_by_id: Dict[str, dict], edges: List[dict]):
-    print("  Computing radial layout...")
+def _save(path, items):
+    destination = Path(path)
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    temp_name = None
+    try:
+        with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8",
+                                         dir=destination.parent, delete=False) as stream:
+            temp_name = stream.name
+            for item in items:
+                stream.write(json.dumps(item, ensure_ascii=False) + "\n")
+        os.replace(temp_name, destination)
+    finally:
+        if temp_name and os.path.exists(temp_name):
+            os.unlink(temp_name)
 
-    adj = defaultdict(set)
-    for e in edges:
-        adj[e['source']].add(e['target'])
-        adj[e['target']].add(e['source'])
 
-    center = node_key("毛泽东", "person")
-    if center not in nodes_by_id:
-        center = next(iter(nodes_by_id))
-
-    layers = defaultdict(list)
-    visited = set()
-    q = deque([(center, 0)])
-    while q:
-        nid, dist = q.popleft()
-        if nid in visited:
-            continue
-        visited.add(nid)
-        layers[dist].append(nid)
-        for neighbor in adj.get(nid, set()):
-            if neighbor not in visited:
-                q.append((neighbor, dist + 1))
-
-    max_dist = max(layers.keys()) if layers else 1
-    phi = (1 + math.sqrt(5)) / 2
-
-    for dist, layer_nodes in sorted(layers.items()):
-        radius = 10 + dist * 80
-        n = len(layer_nodes)
-        for i, nid in enumerate(layer_nodes):
-            angle = 2 * math.pi * ((i * phi) % 1.0)
-            nodes_by_id[nid]['x'] = round(radius * math.cos(angle), 1)
-            nodes_by_id[nid]['y'] = round(radius * math.sin(angle), 1)
-
-    isolated = [nid for nid in nodes_by_id if nid not in visited]
-    cols = int(math.sqrt(len(isolated))) + 1
-    for i, nid in enumerate(isolated):
-        row, col = divmod(i, cols)
-        nodes_by_id[nid]['x'] = round(600 + col * 40, 1)
-        nodes_by_id[nid]['y'] = round(-400 + row * 40, 1)
-
-    print(f"  Layout: {len(visited)} connected nodes in {max_dist+1} rings, {len(isolated)} isolated on grid")
+def clean_graph(raw_nodes, raw_edges, out_nodes, out_edges):
+    nodes, edges = normalize_graph(_load(raw_nodes), _load(raw_edges))
+    _save(out_nodes, nodes)
+    _save(out_edges, edges)
+    print(f"Cleaned graph: {len(nodes)} nodes, {len(edges)} edges")
+    return nodes, edges
 
 
 if __name__ == "__main__":
-    clean_graph(
-        "data/graph/nodes.jsonl", "data/graph/edges.jsonl",
-        "data/cleaned_graph/nodes.jsonl", "data/cleaned_graph/edges.jsonl",
-    )
+    clean_graph("data/graph/nodes.jsonl", "data/graph/edges.jsonl",
+                "data/cleaned_graph/nodes.jsonl", "data/cleaned_graph/edges.jsonl")
