@@ -5,3 +5,5 @@ __pycache__/
 .venv/
 data/mao-chronology.jsonl
 data/graph/checkpoint.json
+.DS_Store
+**/.DS_Store
